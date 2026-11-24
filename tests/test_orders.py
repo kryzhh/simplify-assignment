@@ -48,3 +48,13 @@ class Orders(unittest.TestCase):
         with self.assertRaisesRegex(Problem, "expired"):
             self.store.buy("alice", card["id"], "p")
         self.assertEqual(self.store.ledger("alice"), [])
+
+    def test_credential_scopes_survive_restart(self):
+        token = self.store.issue_token("a")
+        other = self.store.issue_token("b")
+        self.assertEqual(self.store.authenticate(token), "a")
+        self.assertEqual(self.store.authenticate(other), "b")
+        with self.assertRaisesRegex(Problem, "Invalid bearer"):
+            self.store.authenticate(token + "x")
+        with self.assertRaises(ValueError):
+            self.store.issue_token("bad/user")

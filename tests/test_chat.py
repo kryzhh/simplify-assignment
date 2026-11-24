@@ -63,6 +63,8 @@ class Chat(TestCase):
     def test_rupee_quote_for_grams_and_ambiguous_units(self):
         question = "How many grams of gold can I buy for ₹500?"
         self.assertEqual(self.chat.reply("a", question, "grams")["action"]["quote"]["amount"], "500.00")
+        polite = self.chat.reply("a", "Quote gold worth ₹500, please.", "polite")
+        self.assertEqual(polite["action"]["quote"]["amount"], "500.00")
         for i, msg in enumerate(["Buy 500 grams of gold", "Buy gold for -₹500", "Buy ₹5k gold",
                                   "Buy gold worth 500 USD", "Buy gold for 3 crore"]):
             with self.subTest(msg=msg):

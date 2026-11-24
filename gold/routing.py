@@ -66,7 +66,7 @@ def local_intent(text):
     if has(r"\b(cab|taxi|weather)\b"):
         return "other"
     if has(r"\b(gold|sona|sone)\b"):
-        if has(r"how much|how many|kitna|kitne|what.*get|price|cost|rate"):
+        if has(r"how much|how many|kitna|kitne|what.*get|price|cost|rate|quote"):
             return "quote" if has(r"[0-9]") else "education"
         if has(r"should|safe|risk|good|worth it|chahiye|right now|best time"):
             return "risk"

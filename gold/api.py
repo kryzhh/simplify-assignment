@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import responses
 from .chat import Conversation
 from .routing import Groq
 from .runtime import configured_store
@@ -55,9 +56,10 @@ class BodyLimit:
             part = await receive()
             if part["type"] == "http.disconnect":
                 return
-            data.extend(part.get("body", b""))
-            if len(data) > self.maximum:
+            chunk = part.get("body", b"")
+            if len(data) + len(chunk) > self.maximum:
                 return await JSONResponse({"detail": "Request too large."}, 413)(scope, receive, send)
+            data.extend(chunk)
             if not part.get("more_body"):
                 break
 
@@ -129,40 +131,40 @@ def create_app(store=None, groq=None, run_scheduler=True):
             db.execute("SELECT 1 FROM events LIMIT 1").fetchone()
         return {"status": "ok"}
 
-    @app.post("/chat")
+    @app.post("/chat", response_model=responses.Reply)
     def conversation(body: Message, user: owner, command_key: key):
         return chat.reply(user, body.message, command_key)
 
-    @app.post("/quotes")
+    @app.post("/quotes", response_model=responses.Quote)
     def quote(body: Amount, user: owner, command_key: key):
         return store.quote(user, body.amount, command_key)
 
-    @app.get("/quotes/pending")
+    @app.get("/quotes/pending", response_model=responses.Pending)
     def pending(user: owner):
         with store.connection() as db:
             return {"quote": store.pending(db, user)}
 
-    @app.post("/purchases")
+    @app.post("/purchases", response_model=responses.Receipt)
     def purchase(body: Purchase, user: owner, command_key: key):
         return store.buy(user, body.quote_id, command_key)
 
-    @app.get("/ledger")
+    @app.get("/ledger", response_model=list[responses.Receipt])
     def ledger(user: owner, limit: page = 100, offset: offset_param = 0):
         return store.ledger(user, limit, offset)
 
-    @app.post("/sips")
+    @app.post("/sips", response_model=responses.Plan)
     def create_sip(body: Sip, user: owner, command_key: key):
         return plans.create(user, body.amount, body.frequency, body.start, command_key, body.anchor_day)
 
-    @app.get("/sips")
+    @app.get("/sips", response_model=list[responses.Plan])
     def sips(user: owner, limit: page = 100, offset: offset_param = 0):
         return plans.list(user, limit, offset)
 
-    @app.post("/sips/{sip_id}/{action}")
+    @app.post("/sips/{sip_id}/{action}", response_model=responses.Plan)
     def change_sip(sip_id: str, action: Literal["pause", "cancel"], user: owner, command_key: key):
         return plans.change(user, sip_id, action, command_key)
 
-    @app.get("/events")
+    @app.get("/events", response_model=list[responses.Event])
     def trace(user: owner, after: offset_param = 0, limit: page = 100):
         return store.trace(user, after, limit)
 

@@ -22,7 +22,7 @@ ANSWERS = {
 def request_body(text):
     # Strip date expressions before looking for money. A day-of-month is never an amount.
     text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}(?:st|nd|rd|th)\b", "", text)
-    numbers = re.findall(r"(?<![\w.])[-+−]?(?:\d[\d,]*(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", text)
+    numbers = re.findall(r"(?<![\w.])[-+−]?(?:\d+(?:,\d+)*(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?", text)
     if len(numbers) != 1:
         return None
     raw = numbers[0]
