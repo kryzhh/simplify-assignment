@@ -1,11 +1,10 @@
 import calendar
-from datetime import date, timedelta
+from datetime import date, timedelta, timezone
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
 from .store import Problem, amount, costing, fixed
 
-IST = ZoneInfo("Asia/Kolkata")
+IST = timezone(timedelta(hours=5, minutes=30), "IST")
 FREQUENCIES = ("daily", "weekly", "monthly")
 
 
@@ -74,10 +73,13 @@ class Plans:
     def run_due(self, limit=100):
         """Catch up oldest due dates, with a commit between each instalment."""
         count = 0
-        while count < limit:
+        # A quote smaller than the minimum weight can fail for one plan while others can settle.
+        cursor = ("", "")
+        for _ in range(limit):
             with self.store.connection(True) as db:
                 row = db.execute("""SELECT * FROM sips WHERE state='active' AND due<=?
-                    ORDER BY due, id LIMIT 1""", (self.today().isoformat(),)).fetchone()
+                    AND (due, id) > (?, ?) ORDER BY due, id LIMIT 1""",
+                                 (self.today().isoformat(), *cursor)).fetchone()
                 if row is None:
                     break
                 try:
@@ -86,7 +88,10 @@ class Plans:
                 except Problem as exc:
                     self.store.event(db, row["owner"], "instalment_deferred",
                                      sip_id=row["id"], due=row["due"], reason=str(exc))
-                    break
+                    if exc.status == 503:
+                        break
+                    cursor = (row["due"], row["id"])
+                    continue
                 due = date.fromisoformat(row["due"])
                 future = next_date(due, row["frequency"], row["anchor"])
                 result = self.store.book(db, {**dict(row), "rate": rate, "units": units},

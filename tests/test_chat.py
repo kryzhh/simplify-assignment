@@ -59,3 +59,38 @@ class Chat(TestCase):
             self.assertEqual(result["action"]["body"]["start"], ["2026-11-24", "2026-11-30"][i])
         self.assertEqual(result["action"]["body"]["anchor_day"], 31)
         self.assertIsNone(self.chat.reply("a", "Set up a SIP of 1000 weekly starting yesterday", "y")["action"])
+
+    def test_rupee_quote_for_grams_and_ambiguous_units(self):
+        question = "How many grams of gold can I buy for ₹500?"
+        self.assertEqual(self.chat.reply("a", question, "grams")["action"]["quote"]["amount"], "500.00")
+        for i, msg in enumerate(["Buy 500 grams of gold", "Buy gold for -₹500", "Buy ₹5k gold",
+                                  "Buy gold worth 500 USD", "Buy gold for 3 crore"]):
+            with self.subTest(msg=msg):
+                self.assertIsNone(self.chat.reply("a", msg, f"bad-unit-{i}")["action"])
+
+    def test_provider_reply_is_allowlisted_and_replays_do_not_spend_provider_quota(self):
+        class Provider:
+            def __init__(self):
+                self.calls = 0
+
+            def classify(self, message):
+                self.calls += 1
+                return "compare"
+
+        provider = Provider()
+        chat = Conversation(self.store, provider)
+        msg = "Which instrument offers predictable interest?"
+        first = chat.reply("a", msg, "classify")
+        self.assertEqual(first["intent"], "compare")
+        self.assertEqual(chat.reply("a", msg, "classify"), first)
+        self.assertEqual(provider.calls, 1)
+
+    def test_provider_budget_falls_back_per_user(self):
+        class Provider:
+            def classify(self, message):
+                return "compare"
+        chat = Conversation(self.store, Provider())
+        for i in range(8):
+            self.assertEqual(chat.reply("a", "Tell me about term deposits", str(i))["intent"], "compare")
+        self.assertEqual(chat.reply("a", "Tell me about term deposits", "over")["intent"], "other")
+        self.assertEqual(chat.reply("b", "Tell me about term deposits", "new")["intent"], "compare")

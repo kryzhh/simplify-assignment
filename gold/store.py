@@ -120,6 +120,21 @@ class Store:
                               (owner, after, limit))
             return [{**dict(row), "details": json.loads(row["details"])} for row in rows]
 
+    def reserve_model_call(self, owner, key):
+        """Bound external spend across API processes, including concurrent requests."""
+        with self.connection(True) as db:
+            if db.execute("SELECT 1 FROM requests WHERE owner=? AND key=?", (owner, key)).fetchone():
+                return False
+            now = self.now()
+            cutoff = (now - timedelta(minutes=1)).isoformat()
+            db.execute("DELETE FROM model_calls WHERE time<=?", (cutoff,))
+            budget = db.execute("SELECT count(*) AS total, count(CASE WHEN owner=? THEN 1 END) AS personal FROM model_calls",
+                                (owner,)).fetchone()
+            if budget["total"] >= 60 or budget["personal"] >= 8:
+                return False
+            db.execute("INSERT INTO model_calls VALUES (?,?)", (owner, now.isoformat()))
+            return True
+
     def command(self, owner, key, operation, payload, apply):
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", key):
             raise Problem(422, "Invalid Idempotency-Key.")

@@ -53,3 +53,11 @@ class Sips(TestCase):
         self.plans.create("a", "100", "weekly", date(2027, 2, 1), "ok")
         self.assertEqual(self.plans.run_due(), 1)
         self.assertEqual(self.plans.list("a")[0]["next_due"], "2027-02-08")
+
+    def test_too_small_instalment_does_not_block_a_larger_purchase(self):
+        self.price.write_text('{"inr_per_gram":"110000.00"}')
+        self.plans.create("small", "10", "daily", self.plans.today(), "sm")
+        self.plans.create("large", "110", "daily", self.plans.today(), "lg")
+        self.assertEqual(self.plans.run_due(), 1)
+        self.assertEqual(len(self.store.ledger("large")), 1)
+        self.assertEqual(self.store.ledger("small"), [])

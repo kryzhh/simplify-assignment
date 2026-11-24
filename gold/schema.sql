@@ -35,3 +35,7 @@ CREATE TABLE IF NOT EXISTS sips (
 );
 CREATE INDEX IF NOT EXISTS sips_due ON sips(state, due);
 CREATE INDEX IF NOT EXISTS sips_owner ON sips(owner);
+CREATE TABLE IF NOT EXISTS model_calls (
+    owner TEXT NOT NULL, time TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS model_calls_time ON model_calls(time);

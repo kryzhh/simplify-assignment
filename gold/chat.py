@@ -26,7 +26,9 @@ def request_body(text):
     if len(numbers) != 1:
         return None
     raw = numbers[0]
-    if re.search(r"\b(grams?|kg|usd|dollars?|lakh|lakhs|crores?|thousand)\b|\d\s*(?:k|g)\b|[$€£]", text):
+    signed_currency = r"[-−]\s*(?:₹|rs\.?|inr)\s*\d|[-−]\s+\d"
+    non_rupee_amount = r"\d\s*(?:grams?|kg|g|k|thousands?|lakhs?|crores?)\b|\b(?:usd|dollars?|euros?)\b|[$€£]"
+    if re.search(signed_currency, text) or re.search(non_rupee_amount, text):
         raise Problem(422, "Please give the full INR amount in digits, for example ₹500.")
     if "," in raw and not re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d{1,2}(?:,\d{2})+,\d{3}(?:\.\d{1,2})?", raw):
         raise Problem(422, "Please check the commas in the INR amount.")
@@ -82,7 +84,8 @@ class Conversation:
         # Classify unfamiliar language outside the writer lock. Local checks own amounts and permissions.
         source = "local"
         if self.groq and route not in {"blocked", "recover", "pause", "cancel", "sip"}:
-            predicted = self.groq.classify(message)
+            permitted = self.store.reserve_model_call(owner, key)
+            predicted = self.groq.classify(message) if permitted else None
             if predicted and (route == "other" or predicted == route or route == "gold"):
                 route, source = predicted, "groq"
             elif predicted is None:
