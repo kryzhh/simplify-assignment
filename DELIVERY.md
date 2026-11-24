@@ -2,7 +2,9 @@
 
 ## AI use
 
-Codex (OpenAI) generated and edited the implementation, tests, verification script and documentation from the supplied assignment, chat feedback and purchase screenshots. The requester selected FastAPI and Groq. Groq is the application's runtime intent provider.
+Krish selected FastAPI and Groq, gathered the feedback and screenshots, tried the app's purchase flow, and recorded the backend demonstration. Codex (OpenAI) generated and edited the implementation, tests, verification script and documentation. It also helped assemble the feedback reports and edit the recording. Local Whisper transcription helped locate edits in Krish's narration. Groq classifies eligible chat messages at runtime.
+
+During rehearsal, Krish caught a mistake in the AI-generated Postman collection. He asked for a new price, saw an expired quote on the first confirmation, and found his ledger empty. The generated quote request used a fixed header value, `recording-quote`. That made a later request from the same user replay the old quote after its five-minute expiry. The corrected collection uses `recording-quote-{{$guid}}` to request a fresh price and keeps the returned confirmation key for purchase retries. In an isolated replay, confirming the new quote twice produced one receipt. Krish reported the failure and verified the corrected flow on camera. Codex wrote the collection change.
 
 One generated parser initially rejected any message containing the word “grams”:
 
