@@ -27,3 +27,11 @@ CREATE TABLE IF NOT EXISTS events (
     event TEXT NOT NULL, details TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_by_owner ON events(owner, seq);
+CREATE TABLE IF NOT EXISTS sips (
+    id TEXT PRIMARY KEY, owner TEXT NOT NULL, paise INTEGER NOT NULL CHECK(paise>0),
+    frequency TEXT NOT NULL CHECK(frequency IN ('daily','weekly','monthly')),
+    anchor INTEGER NOT NULL CHECK(anchor BETWEEN 1 AND 31),
+    due TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('active','paused','cancelled'))
+);
+CREATE INDEX IF NOT EXISTS sips_due ON sips(state, due);
+CREATE INDEX IF NOT EXISTS sips_owner ON sips(owner);
