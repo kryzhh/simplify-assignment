@@ -37,13 +37,15 @@ def fixed(value, places):
 
 def costing(paise_value, rate):
     units = paise_value * 10_000 // rate
-    if units == 0:
+    if units <= 0:
         raise Problem(422, "This amount buys less than 0.0001 g.")
     return units
 
 
 def display(row):
-    return {"id": row["id"], "amount": fixed(row["paise"], 2),
+    parts = json.loads(row["pricing_json"]) if row["pricing_json"] else {
+        "gold_value": fixed(row["paise"], 2), "gst": "0.00", "platform_fee": "0.00"}
+    return {"id": row["id"], "amount": fixed(row["paise"], 2), "breakdown": parts,
             "inr_per_gram": fixed(row["rate"], 2), "grams": fixed(row["units"], 4)}
 
 
@@ -84,6 +86,13 @@ class Store:
             db.execute("PRAGMA journal_mode=WAL")
             db.executescript(Path(__file__).with_name("schema.sql").read_text())
 
+        # Upgrade older databases without repricing historical orders.
+        with self.connection(True) as db:
+            if "pricing_json" not in {r["name"] for r in db.execute("PRAGMA table_info(quotes)")}:
+                db.execute("ALTER TABLE quotes ADD COLUMN pricing_json TEXT")
+            if "pricing_json" not in {r["name"] for r in db.execute("PRAGMA table_info(ledger)")}:
+                db.execute("ALTER TABLE ledger ADD COLUMN pricing_json TEXT")
+
     def issue_token(self, owner):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", owner):
             raise ValueError("Use a pseudonymous user ID of 1 to 64 ASCII letters, digits, _ or -.")
@@ -101,14 +110,32 @@ class Store:
             raise Problem(401, "Invalid bearer credential.")
         return row["owner"]
 
-    def rate(self):
+    def price_terms(self):
         try:
-            value = paise(json.loads(self.price_path.read_text())["inr_per_gram"])
-            if value <= 0:
-                raise ValueError
-            return value
+            feed = json.loads(self.price_path.read_text())
+            rate = paise(feed["inr_per_gram"])
+            pricing = feed.get("pricing", {})
+            if not isinstance(pricing, dict) or pricing.keys() - {"platform_fee", "gold_gst_bps", "fee_gst_bps"}:
+                raise ValueError("Unrecognised pricing terms")
+            fee = paise(pricing.get("platform_fee", "0"))
+            gold_bps = pricing.get("gold_gst_bps", 0)
+            fee_bps = pricing.get("fee_gst_bps", 0)
+            if rate <= 0 or not all(type(b) is int and 0 <= b <= 10000 for b in (gold_bps, fee_bps)):
+                raise ValueError("Invalid price or tax rate")
         except (OSError, KeyError, ValueError, TypeError, Problem) as exc:
             raise Problem(503, "Gold price unavailable. Please retry later.") from exc
+        return rate, fee, gold_bps, fee_bps
+
+    def price_order(self, total):
+        rate, fee, gold_bps, fee_bps = self.price_terms()
+        fee_tax = (fee * fee_bps + 5000) // 10000
+        inclusive = total - fee - fee_tax
+        if inclusive <= 0:
+            raise Problem(422, "Amount must cover the platform fee and tax.")
+        divisor = 10000 + gold_bps
+        net = (inclusive * 10000 + divisor // 2) // divisor
+        parts = {"gold_value": fixed(net, 2), "gst": fixed(total - fee - net, 2), "platform_fee": fixed(fee, 2)}
+        return {"rate": rate, "units": costing(net, rate), "pricing_json": json.dumps(parts)}
 
     def event(self, db, owner, name, **details):
         db.execute("INSERT INTO events(time,owner,event,details) VALUES (?,?,?,?)",
@@ -159,12 +186,11 @@ class Store:
 
     def new_quote(self, db, owner, value):
         p = amount(value)
-        rate = self.rate()
         now = self.now()
-        row = {"id": uuid4().hex, "owner": owner, "paise": p, "rate": rate,
-               "units": costing(p, rate), "expires": (now + timedelta(minutes=5)).isoformat(),
+        row = {"id": uuid4().hex, "owner": owner, "paise": p, **self.price_order(p),
+               "expires": (now + timedelta(minutes=5)).isoformat(),
                "created": now.isoformat()}
-        db.execute("INSERT INTO quotes VALUES (:id,:owner,:paise,:rate,:units,:expires,:created)", row)
+        db.execute("INSERT INTO quotes (id,owner,paise,rate,units,expires,created,pricing_json) VALUES (:id,:owner,:paise,:rate,:units,:expires,:created,:pricing_json)", row)
         return quote_card(row)
 
     def quote(self, owner, value, key):
@@ -172,9 +198,22 @@ class Store:
 
     def pending(self, db, owner):
         row = db.execute("""SELECT q.* FROM quotes q LEFT JOIN ledger l ON l.quote_id=q.id
-            WHERE q.owner=? AND q.expires>? AND l.id IS NULL
+            WHERE q.owner=? AND q.expires>? AND l.id IS NULL AND NOT EXISTS
+            (SELECT 1 FROM withdrawn_quotes w WHERE w.quote_id=q.id)
             ORDER BY q.created DESC, q.rowid DESC LIMIT 1""", (owner, self.now().isoformat())).fetchone()
         return quote_card(row) if row else None
+
+    def withdraw_quotes(self, db, owner):
+        result = db.execute("""INSERT OR IGNORE INTO withdrawn_quotes(quote_id)
+            SELECT q.id FROM quotes q LEFT JOIN ledger l ON l.quote_id=q.id
+            WHERE q.owner=? AND q.expires>? AND l.id IS NULL""", (owner, self.now().isoformat()))
+        return result.rowcount
+
+    def holdings(self, db, owner):
+        row = db.execute("""SELECT COALESCE(SUM(paise),0) AS paid, COALESCE(SUM(units),0) AS units,
+            COUNT(*) AS purchases FROM ledger WHERE owner=?""", (owner,)).fetchone()
+        return {"grams": fixed(row["units"], 4), "total_paid": fixed(row["paid"], 2),
+                "purchases": row["purchases"]}
 
     def buy(self, owner, quote_id, key):
         def confirm(db):
@@ -184,6 +223,8 @@ class Store:
             previous = db.execute("SELECT * FROM ledger WHERE quote_id=?", (quote_id,)).fetchone()
             if previous:
                 return receipt(previous)
+            if db.execute("SELECT 1 FROM withdrawn_quotes WHERE quote_id=?", (quote_id,)).fetchone():
+                raise Problem(409, "Quote withdrawn. Request a new quote.")
             if row["expires"] <= self.now().isoformat():
                 raise Problem(409, "Quote expired. Request a new price.")
             return self.book(db, row, quote_id=quote_id)
@@ -192,8 +233,8 @@ class Store:
     def book(self, db, priced, quote_id=None, sip_id=None, due=None):
         row = {**dict(priced), "id": uuid4().hex, "created": self.now().isoformat(),
                "quote_id": quote_id, "sip_id": sip_id, "due": due}
-        db.execute("""INSERT INTO ledger VALUES
-            (:id,:owner,:paise,:rate,:units,:created,:quote_id,:sip_id,:due)""", row)
+        db.execute("""INSERT INTO ledger (id,owner,paise,rate,units,created,quote_id,sip_id,due,pricing_json) VALUES
+            (:id,:owner,:paise,:rate,:units,:created,:quote_id,:sip_id,:due,:pricing_json)""", row)
         return receipt(row)
 
     def ledger(self, owner, limit=100, offset=0):

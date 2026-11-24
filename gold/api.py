@@ -148,6 +148,11 @@ def create_app(store=None, groq=None, run_scheduler=True):
     def purchase(body: Purchase, user: owner, command_key: key):
         return store.buy(user, body.quote_id, command_key)
 
+    @app.get("/holdings", response_model=responses.Holdings)
+    def holdings(user: owner):
+        with store.connection() as db:
+            return store.holdings(db, user)
+
     @app.get("/ledger", response_model=list[responses.Receipt])
     def ledger(user: owner, limit: page = 100, offset: offset_param = 0):
         return store.ledger(user, limit, offset)

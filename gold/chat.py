@@ -1,13 +1,20 @@
 import json
 import re
-from datetime import date, timedelta
+from datetime import timedelta
 from uuid import uuid4
 
-from .routing import local_intent
-from .sips import Plans, describe, in_month, next_date
+from . import calendar_terms
+from .routing import local_intent, normalize
+from .sips import Plans, describe
 from .store import Problem, amount, fixed
 
 ANSWERS = {
+    "sell_info": "Simplify Money describes a seven-day hold before selling a purchase. This simulator supports buying and viewing holdings. You can ask how much gold you own.",
+    "gift_info": "Simplify Money offers gifting in its app. This simulator credits purchases to the authenticated buyer. You can review your own gold holdings here.",
+    "other_asset": "I can explain a comparison with gold. For a purchase or recurring plan in another asset, use that product’s own flow.",
+    "expense_info": "I can total your confirmed gold purchases here. I have no linked bank or food-spending records to calculate your other expenses.",
+    "sip_info": "A gold SIP spends a fixed rupee amount on each due date. The grams vary with the price. You can review the amount, frequency and first date before starting.",
+    "decline": "Understood. No transaction or plan change was made.",
     "gold": "Would you like to learn how digital gold works, compare risks, or see a rupee quote?",
     "education": "Digital gold represents a quantity held for you by a provider. Check its custody, fees and redemption terms. I can show a simulated INR quote.",
     "risk": "Gold can lose value, even over a period when you need the money. What time horizon do you have in mind? I can show how a small purchase is priced.",
@@ -22,50 +29,21 @@ ANSWERS = {
 def request_body(text):
     # Strip date expressions before looking for money. A day-of-month is never an amount.
     text = re.sub(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}(?:st|nd|rd|th)\b", "", text)
+    text = re.sub(r"\b(?:22|24)\s*(?:k|karat|carat)\b", "", text)
+    text = re.sub(r"\b(?:rs\.?|inr)(?=\d)", "₹", text)
+    if re.search(r"\d+\.\d+\.\d", text):
+        raise Problem(422, "Please use one decimal point in the INR amount.")
     numbers = re.findall(r"(?<![\w.])[-+−]?(?:\d+(?:,\d+)*(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?", text)
     if len(numbers) != 1:
         return None
     raw = numbers[0]
     signed_currency = r"[-−]\s*(?:₹|rs\.?|inr)\s*\d|[-−]\s+\d"
-    non_rupee_amount = r"\d\s*(?:grams?|kg|g|k|thousands?|lakhs?|crores?)\b|\b(?:usd|dollars?|euros?)\b|[$€£]"
+    non_rupee_amount = r"\d\s*(?:grams?|kg|g|k|thousands?|lakhs?|crores?)\b|\b(?:usd|gbp|eur|aed|btc|bitcoins?|dollars?|euros?|pounds?)\b|[$€£]"
     if re.search(signed_currency, text) or re.search(non_rupee_amount, text):
         raise Problem(422, "Please give the full INR amount in digits, for example ₹500.")
     if "," in raw and not re.fullmatch(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d{1,2}(?:,\d{2})+,\d{3}(?:\.\d{1,2})?", raw):
         raise Problem(422, "Please check the commas in the INR amount.")
     return fixed(amount(raw.replace(",", "")), 2)
-
-
-def plan_terms(text, today, value):
-    frequencies = [f for f, rx in (("daily", r"daily|every day"), ("weekly", r"weekly|every week"),
-                    ("monthly", r"monthly|every month")) if re.search(rx, text)]
-    if not value or len(frequencies) != 1:
-        return "What INR amount and frequency (daily, weekly or monthly) should I use?", None
-    frequency = frequencies[0]
-    body = {"amount": value, "frequency": frequency}
-    iso = re.search(r"\b\d{4}-\d{2}-\d{2}\b", text)
-    ordinal = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)\b", text)
-    if "yesterday" in text:
-        return "The first instalment must be today or later. Which future date should I use?", None
-    start = today + timedelta(days=1) if "tomorrow" in text else today
-    if iso:
-        try:
-            start = date.fromisoformat(iso[0])
-        except ValueError:
-            return "Please provide a valid start date as YYYY-MM-DD.", None
-    elif ordinal:
-        anchor = int(ordinal[1])
-        if frequency != "monthly" or not 1 <= anchor <= 31:
-            return "Please give the first due date as YYYY-MM-DD.", None
-        start = in_month(today.year, today.month, anchor)
-        if start < today:
-            start = next_date(start, frequency, anchor)
-        body["anchor_day"] = anchor
-    elif re.search(r"\b(starting|from|on|next|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", text) and not re.search(r"\b(today|tomorrow)\b", text):
-        return "What is the first due date? Please use YYYY-MM-DD.", None
-    if start < today:
-        return "Choose today or a future start date.", None
-    body["start"] = start.isoformat()
-    return f"Review a {frequency} SIP of ₹{value}, first due {start} (India time).", action("/sips", body)
 
 
 def action(path, body, key=None):
@@ -79,11 +57,11 @@ class Conversation:
         self.groq = groq
 
     def reply(self, owner, message, key):
-        text = " ".join(message.lower().split())
+        text = normalize(message)
         route = local_intent(text)
         # Classify unfamiliar language outside the writer lock. Local checks own amounts and permissions.
         source = "local"
-        if self.groq and route not in {"blocked", "recover", "pause", "cancel", "sip"}:
+        if self.groq and route in {"other", "gold", "purchase", "quote", "risk", "education", "compare", "unclear"}:
             permitted = self.store.reserve_model_call(owner, key)
             predicted = self.groq.classify(message) if permitted else None
             if predicted and (route == "other" or predicted == route or route == "gold"):
@@ -93,7 +71,13 @@ class Conversation:
 
         def respond(db):
             intent = route
-            if re.fullmatch(r"(?:₹|rs\.?|inr)?\s*[0-9,]+(?:\.\d+)?(?:\s*rupees?)?", text):
+            row = db.execute("SELECT terms FROM sip_drafts WHERE owner=? AND expires>?",
+                             (owner, self.store.now().isoformat())).fetchone()
+            draft = {}
+            if row and calendar_terms.is_followup(text):
+                intent, draft = "sip", json.loads(row["terms"])
+            db.execute("DELETE FROM sip_drafts WHERE owner=?", (owner,))
+            if intent != "sip" and re.fullmatch(r"(?:₹|rs\.?|inr)?\s*[0-9,]+(?:\.\d+)?(?:\s*rupees?)?", text):
                 prior = db.execute("""SELECT details FROM events WHERE owner=? AND event='conversation'
                     ORDER BY seq DESC LIMIT 1""", (owner,)).fetchone()
                 if prior:
@@ -101,7 +85,7 @@ class Conversation:
                     if previous["intent"] in ("purchase", "quote", "recover") and previous["action"] is None:
                         intent = "quote"
             try:
-                reply, card = self.answer(db, owner, text, intent)
+                reply, card = self.answer(db, owner, text, intent, draft)
             except Problem as exc:
                 if exc.status != 422:
                     raise
@@ -110,7 +94,17 @@ class Conversation:
             return {"intent": intent, "message": reply, "action": card}
         return self.store.command(owner, key, "conversation", message, respond)
 
-    def answer(self, db, owner, text, route):
+    def answer(self, db, owner, text, route, draft):
+        if route == "rate":
+            rate, *_ = self.store.price_terms()
+            return f"The configured simulation rate is ₹{fixed(rate, 2)} per gram before fees and GST.", None
+        if route == "holdings":
+            total = self.store.holdings(db, owner)
+            return (f"You own {total['grams']} g in this simulated ledger. You paid ₹{total['total_paid']} "
+                    f"across {total['purchases']} completed purchases and instalments."), None
+        if route == "withdraw":
+            count = self.store.withdraw_quotes(db, owner)
+            return f"Withdrew {count} open purchase quote(s). Completed purchases remain in your ledger.", None
         if route in ANSWERS:
             return ANSWERS[route], None
         if route in {"pause", "cancel"}:
@@ -129,10 +123,18 @@ class Conversation:
         else:
             value = request_body(text)
             if route == "sip":
-                return plan_terms(text, self.plans.today(), value)
+                reply, body = calendar_terms.collect(text, self.plans.today(), value, draft)
+                if body:
+                    return reply, action("/sips", body)
+                expires = (self.store.now() + timedelta(minutes=5)).isoformat()
+                db.execute("INSERT INTO sip_drafts VALUES (?,?,?)", (owner, json.dumps(draft), expires))
+                return reply, None
             if not value:
                 return "How many rupees would you like me to quote? For example, buy ₹500 of gold.", None
             card = self.store.new_quote(db, owner, value)
         confirmation = action("/purchases", {"quote_id": card["id"]}, card["id"])
         confirmation["quote"] = card
-        return f"₹{card['amount']} buys {card['grams']} g at ₹{card['inr_per_gram']}/g. Confirm this quote within five minutes.", confirmation
+        parts = card["breakdown"]
+        return (f"Review {card['grams']} g at ₹{card['inr_per_gram']}/g. Gold ₹{parts['gold_value']}, "
+                f"GST ₹{parts['gst']}, platform fee ₹{parts['platform_fee']}. Total ₹{card['amount']}. "
+                f"Confirm by {card['expires_at']}."), confirmation

@@ -96,3 +96,49 @@ class Chat(TestCase):
             self.assertEqual(chat.reply("a", "Tell me about term deposits", str(i))["intent"], "compare")
         self.assertEqual(chat.reply("a", "Tell me about term deposits", "over")["intent"], "other")
         self.assertEqual(chat.reply("b", "Tell me about term deposits", "new")["intent"], "compare")
+
+    def test_holdings_answer_counts_only_settled_gold_owned_by_the_speaker(self):
+        empty = self.chat.reply("b", "How much gold do I own?", "h")
+        self.assertIn("0.0000 g", empty["message"])
+        q = self.store.quote("a","10","q")
+        self.store.buy("a",q["id"],"p")
+        self.store.quote("a","1000","pending")
+        reply = self.chat.reply("a", "mera gold balance kitna hai?", "h")
+        self.assertIn("0.0006 g", reply["message"])
+        self.assertIn("₹10.00", reply["message"])
+        self.assertIsNone(reply["action"])
+
+    def test_product_neighbors_and_negation_never_prepare_an_unrelated_trade(self):
+        for i, message in enumerate(["Start a ₹500 mutual fund SIP", "Can I sell my gold today?",
+                                    "Gift ₹100 of gold to my sister", "Don't pause my SIP",
+                                    "How much did I spend on food this month?", "What is a gold SIP?"]):
+            with self.subTest(message=message):
+                reply = self.chat.reply("a", message, str(i))
+                self.assertIsNone(reply["action"])
+                self.assertNotIn("How many rupees", reply["message"])
+        q = self.chat.reply("a","Buy ₹100 gold","q")["action"]["quote"]
+        self.chat.reply("a","Actually don't buy the gold","stop")
+        from gold.store import Problem
+        with self.assertRaisesRegex(Problem, "withdrawn"):
+            self.store.buy("a", q["id"], "p")
+
+    def test_weekday_and_private_multiturn_sip(self):
+        first = self.chat.reply("a","Start a ₹100 gold SIP","1")
+        self.assertIsNone(first["action"])
+        self.assertIsNone(self.chat.reply("b","every Friday","1")["action"])
+        card = self.chat.reply("a","every Friday","2")["action"]
+        self.assertEqual(card["body"], {"amount":"100.00","frequency":"weekly","start":"2026-11-27"})
+        first = self.chat.reply("a","Set up a weekly SIP of ₹100 starting yesterday","3")
+        self.assertIsNone(first["action"])
+        card = self.chat.reply("a","tomorrow","4")["action"]
+        self.assertEqual(card["body"]["start"],"2026-11-25")
+
+    def test_local_price_and_indian_language_currency(self):
+        price = self.chat.reply("a","What is the current gold price per gram?","price")
+        self.assertIn("12799.38", price["message"])
+        for i, msg in enumerate(["₹५०० का सोना खरीदो", "Buy Rs.500 of 24K gold", "Buy INR500 gold"]):
+            with self.subTest(msg=msg):
+                self.assertEqual(self.chat.reply("a", msg, str(i))["action"]["quote"]["amount"], "500.00")
+        for i, msg in enumerate(["buy gold worth 100.00.5","buy gold for 500 GBP","buy 500 bitcoins worth of gold"]):
+            with self.subTest(msg=msg):
+                self.assertIsNone(self.chat.reply("a", msg, "bad-money" + str(i))["action"])

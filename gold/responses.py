@@ -5,7 +5,14 @@ from typing import Literal
 from pydantic import BaseModel
 
 
+class Breakdown(BaseModel):
+    gold_value: str
+    gst: str
+    platform_fee: str
+
+
 class Price(BaseModel):
+    breakdown: Breakdown | None = None  # Older idempotency responses predate itemisation.
     id: str
     amount: str
     inr_per_gram: str
@@ -19,6 +26,12 @@ class Quote(Price):
 
 class Pending(BaseModel):
     quote: Quote | None
+
+
+class Holdings(BaseModel):
+    grams: str
+    total_paid: str
+    purchases: int
 
 
 class Receipt(Price):

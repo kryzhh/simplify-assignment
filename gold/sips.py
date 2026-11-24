@@ -2,7 +2,7 @@ import calendar
 from datetime import date, timedelta, timezone
 from uuid import uuid4
 
-from .store import Problem, amount, costing, fixed
+from .store import Problem, amount, fixed
 
 IST = timezone(timedelta(hours=5, minutes=30), "IST")
 FREQUENCIES = ("daily", "weekly", "monthly")
@@ -83,8 +83,7 @@ class Plans:
                 if row is None:
                     break
                 try:
-                    rate = self.store.rate()
-                    units = costing(row["paise"], rate)
+                    priced = self.store.price_order(row["paise"])
                 except Problem as exc:
                     self.store.event(db, row["owner"], "instalment_deferred",
                                      sip_id=row["id"], due=row["due"], reason=str(exc))
@@ -94,7 +93,7 @@ class Plans:
                     continue
                 due = date.fromisoformat(row["due"])
                 future = next_date(due, row["frequency"], row["anchor"])
-                result = self.store.book(db, {**dict(row), "rate": rate, "units": units},
+                result = self.store.book(db, {**dict(row), **priced},
                                          sip_id=row["id"], due=row["due"])
                 db.execute("UPDATE sips SET due=? WHERE id=?", (future.isoformat(), row["id"]))
                 self.store.event(db, row["owner"], "instalment", receipt=result, next_due=future.isoformat())

@@ -58,3 +58,18 @@ class Orders(unittest.TestCase):
             self.store.authenticate(token + "x")
         with self.assertRaises(ValueError):
             self.store.issue_token("bad/user")
+
+    def test_product_preview_is_locked_and_matches_the_receipt(self):
+        self.store.price_path = Path("fixtures/price.json")
+        q = self.store.quote("a", "10", "q")
+        self.assertEqual(q["breakdown"], {"gold_value": "8.56", "gst": "0.44", "platform_fee": "1.00"})
+        self.assertEqual(q["grams"], "0.0006")
+        self.store.price_path = self.price
+        self.assertEqual(self.store.buy("a", q["id"], "p")["breakdown"], q["breakdown"])
+        self.assertEqual(self.store.ledger("a")[0]["breakdown"], q["breakdown"])
+
+    def test_public_example_without_platform_fee(self):
+        self.price.write_text('{"inr_per_gram":"6000", "pricing":{"gold_gst_bps":300}}')
+        q = self.store.quote("a", "500", "q")
+        self.assertEqual(q["breakdown"], {"gold_value": "485.44", "gst": "14.56", "platform_fee": "0.00"})
+        self.assertEqual(q["grams"], "0.0809")

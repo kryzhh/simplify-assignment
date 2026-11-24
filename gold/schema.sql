@@ -39,3 +39,9 @@ CREATE TABLE IF NOT EXISTS model_calls (
     owner TEXT NOT NULL, time TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS model_calls_time ON model_calls(time);
+CREATE TABLE IF NOT EXISTS withdrawn_quotes (
+    quote_id TEXT PRIMARY KEY REFERENCES quotes(id)
+);
+CREATE TABLE IF NOT EXISTS sip_drafts (
+    owner TEXT PRIMARY KEY, terms TEXT NOT NULL, expires TEXT NOT NULL
+);

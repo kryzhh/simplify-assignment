@@ -1,1 +1,4 @@
-{"inr_per_gram": "12799.38"}
+{
+  "inr_per_gram": "12799.38",
+  "pricing": {"gold_gst_bps": 300, "platform_fee": "1.00", "fee_gst_bps": 1800}
+}

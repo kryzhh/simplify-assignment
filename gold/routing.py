@@ -2,6 +2,9 @@
 import json
 import logging
 import re
+import unicodedata
+
+from .calendar_terms import DAY
 from http.client import HTTPException, HTTPSConnection
 
 INTENTS = {"gold", "compare", "risk", "education", "quote", "purchase", "sip",
@@ -45,18 +48,44 @@ class Groq:
         return None
 
 
+def normalize(message):
+    text = unicodedata.normalize("NFKC", message).casefold().replace("’", "'")
+    text = "".join(str(unicodedata.decimal(c)) if c.isdecimal() else c for c in text)
+    return " ".join(text.split())
+
+
 def local_intent(text):
     def has(pattern):
         return re.search(pattern, text) is not None
 
     if has(r"system prompt|previous instructions|developer mode|ignore.*instructions|for free|free (gold|purchase)"):
         return "blocked"
+    if has(r"\b(?:don't|do not|never|not now|no thanks|nahi kharidna)\b|मत खरीद|नहीं खरीद"):
+        if has(r"\b(?:don't|do not) (?:want to )?(?:buy|purchase|place the order)\b|मत खरीद|नहीं खरीद"):
+            return "withdraw"
+        return "decline"
+    if has(r"cancel.*(?:buy order|purchase|quote)|discard.*(?:quote|buy card)"):
+        return "withdraw"
+    if has(r"\b(mutual funds?|stocks?|nifty|equity|index funds?|silver|bitcoin|crypto)\b") and has(r"\b(sip|buy|invest|start|purchase)\b"):
+        return "other_asset"
+    if has(r"\b(sell|selling|resell|redeem|liquidate)\b|बेच"):
+        return "sell_info"
+    if has(r"\b(gift|gifting|transfer)\b"):
+        return "gift_info"
+    if has(r"\b(gold|sona|sone)\b|सोना|सोने") and has(r"\b(own|holdings?|balance|already bought|accumulated|have i bought|do i have|have i invested)\b|मेरे पास|बैलेंस"):
+        return "holdings"
+    if has(r"\b(spen[dt]|spending|expenses?|budget|bank balance)\b"):
+        return "expense_info"
+    if has(r"what (?:is|are).*\bsips?\b|how do(?:es)?.*\bsips?\b.*work|explain.*\bsips?\b"):
+        return "sip_info"
     if has(r"resend|send (it |that )?again|missed.*(buy|prompt)|still not there|show.*(button|card)"):
         return "recover"
-    if has(r"\b(stop|cancel|terminate)\b.*\b(sip|plan)|cancel (it|this)"):
+    if has(r"\b(stop|cancel|terminate)\b.*\b(sip|plan)"):
         return "cancel"
     if has(r"\b(pause|suspend)\b"):
         return "pause"
+    if has(rf"every (?:{DAY})\b"):
+        return "sip"
     if has(r"\bsip\b|recurring|monthly|weekly|daily|every (day|week|month)"):
         return "sip"
     if has(r"\bitr\b|tax (return|filing)"):
@@ -65,12 +94,14 @@ def local_intent(text):
         return "compare"
     if has(r"\b(cab|taxi|weather)\b"):
         return "other"
-    if has(r"\b(gold|sona|sone)\b"):
+    if has(r"\b(gold|sona|sone)\b|सोना|सोने"):
+        if has(r"(?:price|rate|cost).*(?:per gram|for (?:one|1) gram)|(?:price|rate|भाव|कीमत)") and not has(r"(?:₹|rupees?|\binr|\brs\.?)|\b(?:buy|purchase|invest)\b"):
+            return "rate"
         if has(r"how much|how many|kitna|kitne|what.*get|price|cost|rate|quote"):
             return "quote" if has(r"[0-9]") else "education"
-        if has(r"should|safe|risk|good|worth it|chahiye|right now|best time"):
+        if has(r"should|safe|risk|good|worth it|chahiye|चाहिए|right now|best time"):
             return "risk"
-        if has(r"buy|purchase|le lo|kharid|khareed|get me|invest"):
+        if has(r"buy|purchase|le lo|kharid|khareed|खरीद|get me|invest"):
             return "purchase"
         if has(r"how|what|explain|work"):
             return "education"
