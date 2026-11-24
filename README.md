@@ -11,13 +11,13 @@ docker compose up --build -d
 docker compose exec api python -m gold issue-token demo
 ```
 
-Open <http://127.0.0.1:8000/docs>, select **Authorize**, and paste the printed token. The API and scheduler start together. The named volume keeps credentials, quotes, receipts and audit events across restarts. Compose publishes the port on loopback.
+Open <http://127.0.0.1:8000/docs>, select **Authorize**, and paste the printed token. The API and scheduler start together. The named volume keeps credentials, quotes, receipts and audit events across restarts. Compose publishes the port on loopback. During upgrades, stop older API and CLI writers before opening the same SQLite volume with the new release.
 
 For a local Python 3.13+ installation, run `./scripts/start`, then `.venv/bin/python -m gold issue-token demo` in another terminal. The first install needs access to PyPI. Local Python reads the process environment. Docker Compose also reads a local `.env` file.
 
 ### Enable Groq
 
-Copy `.env.example` to `.env`, set `GROQ_API_KEY`, and run `docker compose up -d`. The default model is `openai/gpt-oss-20b`. Set `GROQ_MODEL` to select another model available to your account. With a key, Groq classifies eligible messages, including unfamiliar phrasing. The service sends only that message, with no ledger or user identifier. The model can return one intent label. The application supplies the response, quote and confirmation action. With no key, an invalid response, a timeout, or an exhausted request budget, the local router handles the conversation. [Groq chat API](https://console.groq.com/docs/api-reference) · [Groq model catalog](https://console.groq.com/docs/models)
+Create a private `.env` from the template with `install -m 600 .env.example .env` on first setup, set `GROQ_API_KEY`, and run `docker compose up -d`. The default model is `openai/gpt-oss-20b`. Set `GROQ_MODEL` to select another model available to your account. With a key, Groq classifies eligible messages, including unfamiliar phrasing. The service sends only that message, with no ledger or user identifier. The model can return one intent label. The application supplies the response, quote and confirmation action. With no key, an invalid response, a timeout, or an exhausted request budget, the local router handles the conversation. [Groq chat API](https://console.groq.com/docs/api-reference) · [Groq model catalog](https://console.groq.com/docs/models)
 
 ## Verify
 
@@ -31,8 +31,9 @@ The walkthrough boots a second copy of the actual API on an ephemeral loopback p
 ## Try a purchase
 
 ```sh
-TOKEN=$(docker compose exec -T api python -m gold issue-token reviewer)
-curl -sS http://127.0.0.1:8000/chat -H "Authorization: Bearer $TOKEN" \
+docker compose exec -T api python -m gold issue-token reviewer |
+  sed 's/^/Authorization: Bearer /' |
+  curl -sS http://127.0.0.1:8000/chat -H @- \
   -H 'Content-Type: application/json' -H 'Idempotency-Key: ask-001' \
   -d '{"message":"How much gold can I buy for 500 rupees?"}'
 ```
@@ -49,7 +50,7 @@ The reply contains an `action` with a method, path, JSON body and idempotency ke
 | `POST /sips` | Takes `amount`, `frequency` and an ISO `start` date. Monthly plans can include `anchor_day`. |
 | `GET /sips` | Lists the caller's plans, with state and next due date. Supports `limit` and `offset`. |
 | `POST /sips/{id}/pause` or `/cancel` | Stops future instalments. A paused SIP can subsequently be cancelled. |
-| `GET /events` | Reads the caller's durable audit log. Pass the last sequence as `after` to page forward. |
+| `GET /events` | Reads the caller's durable audit log. Pass the last user-specific numeric cursor as `after`. On upgrading from global cursors, restart with `after=0` if the API returns 409. Historical records remain available. |
 | `GET /health` | Checks SQLite access. |
 
 Every POST requires an idempotency key. Reuse it when retrying a logical command. Identical retries return the saved response. Reusing the key with another payload returns 409. Reconfirming a consumed quote returns its existing receipt even with a new key. A fresh key on an explicit SIP creation denotes a new plan.

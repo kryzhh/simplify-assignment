@@ -61,3 +61,15 @@ class Sips(TestCase):
         self.assertEqual(self.plans.run_due(), 1)
         self.assertEqual(len(self.store.ledger("large")), 1)
         self.assertEqual(self.store.ledger("small"), [])
+
+    def test_deferred_retry_persists_across_worker_passes(self):
+        self.price.write_text('{"inr_per_gram":"110000.00"}')
+        self.plans.create("small", "10", "daily", self.plans.today(), "s")
+        self.assertEqual(self.plans.run_due(limit=1), 0)
+        self.plans.create("large", "110", "daily", self.plans.today(), "l")
+        self.assertEqual(Plans(self.store).run_due(limit=1), 1)
+        self.assertEqual(len(self.store.ledger("large")), 1)
+        self.price.write_text('{"inr_per_gram":"10000.00"}')
+        self.now += timedelta(minutes=1)
+        self.assertEqual(self.plans.run_due(limit=1), 1)
+        self.assertEqual(self.store.ledger("small")[0]["due_on"], self.plans.today().isoformat())

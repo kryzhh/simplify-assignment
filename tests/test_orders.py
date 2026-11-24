@@ -73,3 +73,22 @@ class Orders(unittest.TestCase):
         q = self.store.quote("a", "500", "q")
         self.assertEqual(q["breakdown"], {"gold_value": "485.44", "gst": "14.56", "platform_fee": "0.00"})
         self.assertEqual(q["grams"], "0.0809")
+
+    def test_cursor_pages_are_private_and_survive_upgrading_old_rows(self):
+        self.store.quote("alice", "10", "a1")
+        self.store.quote("bob", "10", "b1")
+        self.store.quote("alice", "20", "a2")
+        # Recreate the old event storage layout while preserving the real rows.
+        with self.store.connection(True) as db:
+            db.execute("DROP INDEX events_owner_seq")
+            db.execute("ALTER TABLE events DROP COLUMN owner_seq")
+        self.store.initialize()
+        self.store.initialize()
+        page = self.store.trace("alice", limit=1)
+        cursor = page[0]["seq"]
+        self.assertEqual(self.store.trace("bob")[0]["seq"], cursor)
+        second = self.store.trace("alice", after=cursor)
+        self.assertEqual([e["seq"] for e in second], [cursor + 1])
+        self.assertEqual(self.store.trace("alice", after=second[0]["seq"]), [])
+        with self.assertRaisesRegex(Problem, "Restart pagination"):
+            self.store.trace("alice", after=1)

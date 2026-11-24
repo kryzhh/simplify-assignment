@@ -58,6 +58,11 @@ def quote_card(row):
     return {**display(row), "expires_at": row["expires"], "action": "confirm_purchase"}
 
 
+# Keep numeric bookmarks distinguishable from the pre-privacy global event IDs.
+# The base and realistic owner counts remain exactly representable in JavaScript.
+EVENT_CURSOR_BASE = 1 << 48
+
+
 class Store:
     def __init__(self, path, price_path, clock=None):
         self.path = Path(path)
@@ -92,6 +97,15 @@ class Store:
                 db.execute("ALTER TABLE quotes ADD COLUMN pricing_json TEXT")
             if "pricing_json" not in {r["name"] for r in db.execute("PRAGMA table_info(ledger)")}:
                 db.execute("ALTER TABLE ledger ADD COLUMN pricing_json TEXT")
+
+            if "retry_after" not in {r["name"] for r in db.execute("PRAGMA table_info(sips)")}:
+                db.execute("ALTER TABLE sips ADD COLUMN retry_after TEXT")
+            if "owner_seq" not in {r["name"] for r in db.execute("PRAGMA table_info(events)")}:
+                db.execute("ALTER TABLE events ADD COLUMN owner_seq INTEGER")
+                db.execute("""WITH numbered AS MATERIALIZED (
+                    SELECT seq, row_number() OVER (PARTITION BY owner ORDER BY seq) AS n FROM events
+                ) UPDATE events SET owner_seq=n FROM numbered WHERE events.seq=numbered.seq""")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS events_owner_seq ON events(owner,owner_seq)")
 
     def issue_token(self, owner):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", owner):
@@ -138,14 +152,19 @@ class Store:
         return {"rate": rate, "units": costing(net, rate), "pricing_json": json.dumps(parts)}
 
     def event(self, db, owner, name, **details):
-        db.execute("INSERT INTO events(time,owner,event,details) VALUES (?,?,?,?)",
-                   (self.now().isoformat(), owner, name, json.dumps(details, ensure_ascii=False)))
+        db.execute("""INSERT INTO events(time,owner,event,details,owner_seq)
+            SELECT ?,?,?,?,COALESCE(MAX(owner_seq),0)+1 FROM events WHERE owner=?""",
+            (self.now().isoformat(), owner, name, json.dumps(details, ensure_ascii=False), owner))
 
     def trace(self, owner, after=0, limit=100):
+        if 0 < after < EVENT_CURSOR_BASE:
+            raise Problem(409, "The event cursor format changed. Restart pagination from after=0.")
+        cursor = max(0, after - EVENT_CURSOR_BASE)
         with self.connection() as db:
-            rows = db.execute("SELECT * FROM events WHERE owner=? AND seq>? ORDER BY seq LIMIT ?",
-                              (owner, after, limit))
-            return [{**dict(row), "details": json.loads(row["details"])} for row in rows]
+            rows = db.execute("""SELECT owner_seq,time,owner,event,details FROM events
+                WHERE owner=? AND owner_seq>? ORDER BY owner_seq LIMIT ?""", (owner, cursor, limit))
+            return [{"seq": EVENT_CURSOR_BASE + row["owner_seq"], "time": row["time"], "owner": owner,
+                     "event": row["event"], "details": json.loads(row["details"])} for row in rows]
 
     def reserve_model_call(self, owner, key):
         """Bound external spend across API processes, including concurrent requests."""

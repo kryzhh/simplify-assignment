@@ -46,7 +46,7 @@ class Plans:
                 raise Problem(422, "Monthly anchor day must agree with the first due date.")
             row = {"id": uuid4().hex, "owner": owner, "paise": paise_value, "frequency": frequency,
                    "anchor": anchor, "due": start.isoformat(), "state": "active"}
-            db.execute("INSERT INTO sips VALUES (:id,:owner,:paise,:frequency,:anchor,:due,:state)", row)
+            db.execute("INSERT INTO sips (id,owner,paise,frequency,anchor,due,state) VALUES (:id,:owner,:paise,:frequency,:anchor,:due,:state)", row)
             return describe(row)
         return self.store.command(owner, key, "sip_created", payload, insert)
 
@@ -73,13 +73,13 @@ class Plans:
     def run_due(self, limit=100):
         """Catch up oldest due dates, with a commit between each instalment."""
         count = 0
-        # A quote smaller than the minimum weight can fail for one plan while others can settle.
-        cursor = ("", "")
         for _ in range(limit):
             with self.store.connection(True) as db:
+                now = self.store.now().astimezone(IST)
                 row = db.execute("""SELECT * FROM sips WHERE state='active' AND due<=?
-                    AND (due, id) > (?, ?) ORDER BY due, id LIMIT 1""",
-                                 (self.today().isoformat(), *cursor)).fetchone()
+                    AND (retry_after IS NULL OR retry_after<=?)
+                    ORDER BY COALESCE(retry_after,due), id LIMIT 1""",
+                                 (now.date().isoformat(), now.isoformat())).fetchone()
                 if row is None:
                     break
                 try:
@@ -89,13 +89,14 @@ class Plans:
                                      sip_id=row["id"], due=row["due"], reason=str(exc))
                     if exc.status == 503:
                         break
-                    cursor = (row["due"], row["id"])
+                    retry = (now + timedelta(minutes=1)).isoformat()
+                    db.execute("UPDATE sips SET retry_after=? WHERE id=?", (retry, row["id"]))
                     continue
                 due = date.fromisoformat(row["due"])
                 future = next_date(due, row["frequency"], row["anchor"])
                 result = self.store.book(db, {**dict(row), **priced},
                                          sip_id=row["id"], due=row["due"])
-                db.execute("UPDATE sips SET due=? WHERE id=?", (future.isoformat(), row["id"]))
+                db.execute("UPDATE sips SET due=?, retry_after=NULL WHERE id=?", (future.isoformat(), row["id"]))
                 self.store.event(db, row["owner"], "instalment", receipt=result, next_due=future.isoformat())
                 count += 1
         return count

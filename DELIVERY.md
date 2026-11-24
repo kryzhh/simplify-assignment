@@ -29,5 +29,5 @@ The same test checks a numeric weight, an ambiguous shorthand, a signed currency
 * Changing gold rounding to nearest in a temporary copy made the ₹333.33 regression test fail with 0.0556 g in place of 0.0555 g. The bundled app-style pricing fixture also reproduces the observed ₹10 receipt. The fee assumptions are illustrative.
 * Real money movement and gold custody would require payment and custody providers, verified webhook processing, reconciliation and provider-side idempotency. This service records simulated purchases.
 * The deployment target here is a single host with persistent local storage. Before serving customer traffic, provide TLS termination, token rotation and revocation, database backups and restore drills, audit retention, and operations monitoring. Multiple hosts would require a shared transactional store and coordinated scheduling.
-* Runtime dependencies are pinned directly. A hash-locked transitive dependency set and a verified production image digest remain release work.
+* Runtime dependencies are pinned directly. The base image and CI actions are pinned by digest or commit. Hash-locking the complete Python dependency graph and verifying the final release image remain release work.
 * The recording, applicant CV and non-code assignment documents are separate submission materials.

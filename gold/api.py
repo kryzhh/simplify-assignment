@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import responses
 from .chat import Conversation
+from .docs import documentation
 from .routing import Groq
 from .runtime import configured_store
 from .sips import Plans
@@ -44,24 +45,35 @@ class Sip(Amount):
 
 class BodyLimit:
     """Bound bytes before JSON decoding, including chunked requests."""
-    def __init__(self, app, maximum=8192):
+    def __init__(self, app, maximum=8192, read_timeout=10):
         self.app = app
         self.maximum = maximum
+        self.read_timeout = read_timeout
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["method"] != "POST":
             return await self.app(scope, receive, send)
         data = bytearray()
-        while True:
-            part = await receive()
-            if part["type"] == "http.disconnect":
-                return
-            chunk = part.get("body", b"")
-            if len(data) + len(chunk) > self.maximum:
-                return await JSONResponse({"detail": "Request too large."}, 413)(scope, receive, send)
-            data.extend(chunk)
-            if not part.get("more_body"):
-                break
+        oversized = False
+        try:
+            async with asyncio.timeout(self.read_timeout):
+                while True:
+                    part = await receive()
+                    if part["type"] == "http.disconnect":
+                        return
+                    chunk = part.get("body", b"")
+                    if len(data) + len(chunk) > self.maximum:
+                        oversized = True
+                        break
+                    data.extend(chunk)
+                    if not part.get("more_body"):
+                        break
+        except TimeoutError:
+            headers = {"Connection": "close"} if scope.get("http_version", "1.1").startswith("1.") else {}
+            return await JSONResponse({"detail": "Request body timed out."}, 408, headers)(scope, receive, send)
+
+        if oversized:
+            return await JSONResponse({"detail": "Request too large."}, 413)(scope, receive, send)
 
         async def buffered():
             nonlocal data
@@ -100,7 +112,7 @@ def create_app(store=None, groq=None, run_scheduler=True):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
 
-    app = FastAPI(title="Digital Gold", version="1.0.0", lifespan=lifespan,
+    app = FastAPI(title="Digital Gold", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None,
                   description="Authenticated simulated INR ledger. Money values are decimal strings.")
     app.add_middleware(BodyLimit)
     bearer = HTTPBearer(auto_error=False)
@@ -113,7 +125,7 @@ def create_app(store=None, groq=None, run_scheduler=True):
     owner = Annotated[str, Depends(identify)]
     key = Annotated[str, Header(alias="Idempotency-Key", pattern=r"^[A-Za-z0-9._:-]{1,128}$")]
     page = Annotated[int, Query(ge=1, le=200)]
-    offset_param = Annotated[int, Query(ge=0)]
+    offset_param = Annotated[int, Query(ge=0, le=2**63 - 1)]
 
     @app.exception_handler(Problem)
     async def problem(_, exc):
@@ -124,6 +136,14 @@ def create_app(store=None, groq=None, run_scheduler=True):
     async def database_error(_, exc):
         logging.getLogger(__name__).error("sqlite_operation_failed code=%s", getattr(exc, "sqlite_errorname", None))
         return JSONResponse({"detail": "Storage unavailable. Retry with the same key."}, 503)
+
+    @app.get("/docs", include_in_schema=False)
+    def swagger_ui():
+        return documentation()
+
+    @app.get("/redoc", include_in_schema=False)
+    def redoc_ui():
+        return documentation(redoc=True)
 
     @app.get("/health")
     def health():
