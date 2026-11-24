@@ -24,7 +24,8 @@ The same test checks a numeric weight, an ambiguous shorthand, a signed currency
 
 ## Verification and remaining work
 
-* Docker Compose built the Python 3.13 image, started the API and scheduler, and passed the health check. All 24 tests passed inside the container. The separate HTTP walkthrough completed a purchase, replayed it, booked three SIP instalments, tested owner isolation, simulated a price outage and exported the trace. The walkthrough uses a temporary database.
+* A fresh Git clone at `d2e33d6` started the API and scheduler with Docker Compose, an empty database and no Groq key. All 28 tests passed inside the container. The separate HTTP walkthrough completed a purchase, replayed it, booked three SIP instalments, tested owner isolation, simulated a price outage and exported the trace. The walkthrough uses a temporary database.
+* In a fresh Brave profile, Swagger UI loaded, accepted a disposable token and returned HTTP 200 for an authenticated holdings request. ReDoc also rendered the holdings operation from the published schema. Both documentation pages load pinned assets from jsDelivr.
 * A synthetic request to the configured Groq model returned the expected comparison intent. Bandit and the source checker reported no findings at their configured thresholds. Pip-audit found no known advisories for the resolved runtime requirements at verification time.
 * Changing gold rounding to nearest in a temporary copy made the ₹333.33 regression test fail with 0.0556 g in place of 0.0555 g. The bundled app-style pricing fixture also reproduces the observed ₹10 receipt. The fee assumptions are illustrative.
 * Real money movement and gold custody would require payment and custody providers, verified webhook processing, reconciliation and provider-side idempotency. This service records simulated purchases.
